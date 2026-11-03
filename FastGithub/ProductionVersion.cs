@@ -98,7 +98,11 @@ namespace FastGithub
             var parts = productionVersion.Split('+');
             string version = parts[0];
             string subVersion = parts.Length > 1 ? parts[1] : string.Empty;
-            return new ProductionVersion(Version.Parse(version), subVersion);
+            if (Version.TryParse(version, out var parsed) == false)
+            {
+                parsed = new Version(0, 0);
+            }
+            return new ProductionVersion(parsed, subVersion);
         }
     }
 }

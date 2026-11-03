@@ -97,7 +97,7 @@ namespace FastGithub
             }
             catch (Exception ex)
             {
-                logger.LogError(ex.Message, $"服务{action}异常");
+                logger.LogError(ex, $"服务{action}异常");
             }
             return true;
         }
@@ -159,21 +159,55 @@ namespace FastGithub
                     .AppendLine("WantedBy=multi-user.target");
                 File.WriteAllText(serviceFilePath, serviceBuilder.ToString());
 
-                Process.Start("chcon", $"--type=bin_t {binaryPath}").WaitForExit(); // SELinux
-                Process.Start("systemctl", "daemon-reload").WaitForExit();
-                Process.Start("systemctl", $"start {serviceName}.service").WaitForExit();
-                Process.Start("systemctl", $"enable {serviceName}.service").WaitForExit();
+                // SELinux场景可选，系统无chcon时不影响服务安装
+                try
+                {
+                    RunExternalCommand("chcon", $"--type=bin_t {binaryPath}");
+                }
+                catch (Exception)
+                {
+                }
+                RunExternalCommand("systemctl", "daemon-reload");
+                RunExternalCommand("systemctl", $"start {serviceName}.service");
+                RunExternalCommand("systemctl", $"enable {serviceName}.service");
             }
             else if (cmd == Command.Stop)
             {
-                Process.Start("systemctl", $"stop {serviceName}.service").WaitForExit();
-                Process.Start("systemctl", $"disable {serviceName}.service").WaitForExit();
+                RunExternalCommand("systemctl", $"stop {serviceName}.service");
+                RunExternalCommand("systemctl", $"disable {serviceName}.service");
 
                 if (File.Exists(serviceFilePath))
                 {
                     File.Delete(serviceFilePath);
                 }
-                Process.Start("systemctl", "daemon-reload").WaitForExit();
+                RunExternalCommand("systemctl", "daemon-reload");
+            }
+        }
+
+        /// <summary>
+        /// 运行外部命令，带超时并释放进程句柄
+        /// </summary>
+        /// <param name="fileName"></param>
+        /// <param name="arguments"></param>
+        [SupportedOSPlatform("linux")]
+        private static void RunExternalCommand(string fileName, string arguments)
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+            }) ?? throw new InvalidOperationException($"无法启动外部命令{fileName}");
+
+            if (process.WaitForExit(TimeSpan.FromSeconds(30d)) == false)
+            {
+                process.Kill();
+                throw new TimeoutException($"外部命令{fileName}执行超时");
+            }
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"外部命令{fileName}执行失败，退出码{process.ExitCode}");
             }
         }
     }

@@ -5,6 +5,7 @@ using System;
 using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace FastGithub.HttpServer.TcpMiddlewares
@@ -17,6 +18,8 @@ namespace FastGithub.HttpServer.TcpMiddlewares
         private readonly HttpParser<HttpRequestHandler> httpParser = new();
         private readonly byte[] http200 = Encoding.ASCII.GetBytes("HTTP/1.1 200 Connection Established\r\n\r\n");
         private readonly byte[] http400 = Encoding.ASCII.GetBytes("HTTP/1.1 400 Bad Request\r\n\r\n");
+        private static readonly TimeSpan idleTimeout = TimeSpan.FromSeconds(30d);
+        private const int MaxRequestBufferSize = 64 * 1024;
 
         /// <summary>
         /// 执行中间件
@@ -29,10 +32,22 @@ namespace FastGithub.HttpServer.TcpMiddlewares
             var input = context.Transport.Input;
             var output = context.Transport.Output;
             var request = new HttpRequestHandler();
+            var responseWritten = false;
 
             while (context.ConnectionClosed.IsCancellationRequested == false)
             {
-                var result = await input.ReadAsync();
+                ReadResult result;
+                try
+                {
+                    // 空闲超时，避免连接被无限期占用
+                    using var idleTimeoutSource = new CancellationTokenSource(idleTimeout);
+                    result = await input.ReadAsync(idleTimeoutSource.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
                 if (result.IsCanceled)
                 {
                     break;
@@ -46,6 +61,7 @@ namespace FastGithub.HttpServer.TcpMiddlewares
                         {
                             input.AdvanceTo(consumed);
                             await output.WriteAsync(this.http200, context.ConnectionClosed);
+                            responseWritten = true;
                         }
                         else
                         {
@@ -59,6 +75,14 @@ namespace FastGithub.HttpServer.TcpMiddlewares
                     }
                     else
                     {
+                        // 请求行与头部过大，拒绝请求，防止缓冲区无限增长
+                        if (result.Buffer.Length > MaxRequestBufferSize)
+                        {
+                            input.AdvanceTo(result.Buffer.End);
+                            await output.WriteAsync(this.http400, context.ConnectionClosed);
+                            break;
+                        }
+
                         input.AdvanceTo(result.Buffer.Start, result.Buffer.End);
                     }
 
@@ -69,7 +93,11 @@ namespace FastGithub.HttpServer.TcpMiddlewares
                 }
                 catch (Exception)
                 {
-                    await output.WriteAsync(this.http400, context.ConnectionClosed);
+                    // 尚未向客户端响应过时才发送400，避免向隧道写入破坏协议
+                    if (responseWritten == false)
+                    {
+                        await output.WriteAsync(this.http400, context.ConnectionClosed);
+                    }
                     break;
                 }
             }

@@ -130,10 +130,11 @@ namespace FastGithub.HttpServer.HttpMiddlewares
                 return;
             }
 
+            // 转发失败属于网关错误，且不应把内部异常消息泄露给客户端
+            context.Response.StatusCode = StatusCodes.Status502BadGateway;
             await context.Response.WriteAsJsonAsync(new
             {
-                error = error.ToString(),
-                message = context.GetForwarderErrorFeature()?.Exception?.Message
+                error = error.ToString()
             });
         }
     }

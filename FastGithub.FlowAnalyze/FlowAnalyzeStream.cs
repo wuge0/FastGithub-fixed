@@ -46,25 +46,25 @@ namespace FastGithub.FlowAnalyze
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            this.flowAnalyzer.OnFlow(FlowType.Wirte, count);
+            this.flowAnalyzer.OnFlow(FlowType.Write, count);
             base.Write(buffer, offset, count);
         }
 
         public override void Write(ReadOnlySpan<byte> source)
         {
-            this.flowAnalyzer.OnFlow(FlowType.Wirte, source.Length);
+            this.flowAnalyzer.OnFlow(FlowType.Write, source.Length);
             base.Write(source);
         }
 
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            this.flowAnalyzer.OnFlow(FlowType.Wirte, count);
+            this.flowAnalyzer.OnFlow(FlowType.Write, count);
             return base.WriteAsync(buffer, offset, count, cancellationToken);
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default)
         {
-            this.flowAnalyzer.OnFlow(FlowType.Wirte, source.Length);
+            this.flowAnalyzer.OnFlow(FlowType.Write, source.Length);
             return base.WriteAsync(source, cancellationToken);
         }
     }

@@ -17,18 +17,18 @@ namespace FastGithub
     /// </summary>
     sealed class AppHostedService : BackgroundService
     {
-        private readonly IHost host;
+        private readonly IHostApplicationLifetime lifetime;
         private readonly IOptions<AppOptions> appOptions;
         private readonly IOptions<FastGithubOptions> fastGithubOptions;
         private readonly ILogger<AppHostedService> logger;
 
         public AppHostedService(
-            IHost host,
+            IHostApplicationLifetime lifetime,
             IOptions<AppOptions> appOptions,
             IOptions<FastGithubOptions> fastGithubOptions,
             ILogger<AppHostedService> logger)
         {
-            this.host = host;
+            this.lifetime = lifetime;
             this.appOptions = appOptions;
             this.fastGithubOptions = fastGithubOptions;
             this.logger = logger;
@@ -39,7 +39,7 @@ namespace FastGithub
         /// </summary>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public override Task StartAsync(CancellationToken cancellationToken)
+        public override async Task StartAsync(CancellationToken cancellationToken)
         {
             Version version;
             if (ProductionVersion.Current is not null)
@@ -50,8 +50,8 @@ namespace FastGithub
             {
                 version = new Version(0, 0);
             }
+            await base.StartAsync(cancellationToken);
             this.logger.LogInformation($"\n======[ {nameof(FastGithub)} 启动完成，当前版本为 V{version} ]======\n");
-            return base.StartAsync(cancellationToken);
         }
 
         /// <summary>
@@ -61,9 +61,16 @@ namespace FastGithub
         /// <returns></returns>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            await Task.Delay(TimeSpan.FromSeconds(1d), stoppingToken);
-            await this.CheckFastGithubProxyAsync(stoppingToken);
-            await this.WaitForParentProcessExitAsync(stoppingToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1d), stoppingToken);
+                await this.CheckFastGithubProxyAsync(stoppingToken);
+                await this.WaitForParentProcessExitAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // 正常停机，避免记录BackgroundService failed
+            }
         }
 
 
@@ -156,7 +163,9 @@ namespace FastGithub
 
             try
             {
-                Process.GetProcessById(parentId).WaitForExit();
+                // 异步等待父进程退出，避免同步阻塞线程池线程
+                using var parentProcess = Process.GetProcessById(parentId);
+                await parentProcess.WaitForExitAsync(cancellationToken);
             }
             catch (Exception ex)
             {
@@ -165,7 +174,8 @@ namespace FastGithub
             finally
             {
                 this.logger.LogInformation($"正在主动关闭，因为父进程已退出");
-                await this.host.StopAsync(cancellationToken);
+                // 通过应用生命周期请求停止，避免在HostedService内调用host.StopAsync造成循环等待
+                this.lifetime.StopApplication();
             }
         }
 

@@ -8,6 +8,7 @@ using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.AccessControl;
 using System.Text;
 
 namespace FastGithub.HttpServer.Certs
@@ -18,10 +19,13 @@ namespace FastGithub.HttpServer.Certs
     sealed class CertService
     {
         private const string CACERT_PATH = "cacert";
-        private readonly IMemoryCache serverCertCache;
+        // 限制服务器证书缓存条目数，防止任意SNI导致缓存无界增长
+        private readonly IMemoryCache serverCertCache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 1024 });
         private readonly IEnumerable<ICaCertInstaller> certInstallers;
         private readonly ILogger<CertService> logger;
+        private readonly object caCertLock = new();
         private X509Certificate2? caCert;
+        private bool caCertTrusted;
 
 
         /// <summary>
@@ -37,15 +41,12 @@ namespace FastGithub.HttpServer.Certs
         /// <summary>
         /// 证书服务
         /// </summary>
-        /// <param name="serverCertCache"></param>
         /// <param name="certInstallers"></param>
         /// <param name="logger"></param>
         public CertService(
-            IMemoryCache serverCertCache,
             IEnumerable<ICaCertInstaller> certInstallers,
             ILogger<CertService> logger)
         {
-            this.serverCertCache = serverCertCache;
             this.certInstallers = certInstallers;
             this.logger = logger;
             Directory.CreateDirectory(CACERT_PATH);
@@ -72,6 +73,7 @@ namespace FastGithub.HttpServer.Certs
 
             var privateKeyPem = this.caCert.GetRSAPrivateKey()?.ExportRSAPrivateKeyPem();
             File.WriteAllText(this.CaKeyFilePath, new string(privateKeyPem), Encoding.ASCII);
+            RestrictCaKeyFilePermission(this.CaKeyFilePath);
 
             var certPem = this.caCert.ExportCertificatePem();
             File.WriteAllText(this.CaCerFilePath, new string(certPem), Encoding.ASCII);
@@ -80,10 +82,43 @@ namespace FastGithub.HttpServer.Certs
         }
 
         /// <summary>
+        /// 收紧CA私钥文件的访问权限，仅允许当前用户读写
+        /// </summary>
+        /// <param name="filePath"></param>
+        private static void RestrictCaKeyFilePermission(string filePath)
+        {
+            try
+            {
+                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+                {
+                    File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+                else if (OperatingSystem.IsWindows())
+                {
+                    var security = new FileSecurity();
+                    security.SetAccessRule(new FileSystemAccessRule(
+                        Environment.UserName,
+                        FileSystemRights.Read | FileSystemRights.Write,
+                        AccessControlType.Allow));
+                    new FileInfo(filePath).SetAccessControl(security);
+                }
+            }
+            catch (Exception)
+            {
+                // 权限设置失败不阻断启动，但私钥文件仍保持默认权限
+            }
+        }
+
+        /// <summary>
         /// 安装和信任CA证书
-        /// </summary> 
+        /// </summary>
         public void InstallAndTrustCaCert()
         {
+            if (this.caCertTrusted)
+            {
+                return;
+            }
+
             var installer = this.certInstallers.FirstOrDefault(item => item.IsSupported());
             if (installer != null)
             {
@@ -95,10 +130,11 @@ namespace FastGithub.HttpServer.Certs
             }
 
             GitConfigSslverify(false);
+            this.caCertTrusted = true;
         }
 
         /// <summary>
-        /// 设置ssl验证
+        /// 设置github.com的ssl验证
         /// </summary>
         /// <param name="value">是否验证</param>
         /// <returns></returns>
@@ -106,15 +142,16 @@ namespace FastGithub.HttpServer.Certs
         {
             try
             {
-                Process.Start(new ProcessStartInfo
+                using var process = Process.Start(new ProcessStartInfo
                 {
                     FileName = "git",
-                    Arguments = $"config --global http.sslverify {value.ToString().ToLower()}",
-                    UseShellExecute = true,
+                    // 仅关闭github.com域名的ssl验证，不影响其他仓库
+                    Arguments = $"config --global http.https://github.com/.sslverify {value.ToString().ToLower()}",
+                    UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 });
-                return true;
+                return process == null || process.WaitForExit(10_000);
             }
             catch (Exception)
             {
@@ -131,9 +168,16 @@ namespace FastGithub.HttpServer.Certs
         {
             if (this.caCert == null)
             {
-                using var rsa = RSA.Create();
-                rsa.ImportFromPem(File.ReadAllText(this.CaKeyFilePath));
-                this.caCert = new X509Certificate2(this.CaCerFilePath).CopyWithPrivateKey(rsa);
+                lock (this.caCertLock)
+                {
+                    if (this.caCert == null)
+                    {
+                        using var rsa = RSA.Create();
+                        rsa.ImportFromPem(File.ReadAllText(this.CaKeyFilePath));
+                        using var certWithoutKey = new X509Certificate2(this.CaCerFilePath);
+                        this.caCert = certWithoutKey.CopyWithPrivateKey(rsa);
+                    }
+                }
             }
 
             var key = $"{nameof(CertService)}:{domain}";
@@ -143,6 +187,7 @@ namespace FastGithub.HttpServer.Certs
             // 生成域名的1年证书
             X509Certificate2 GetOrCreateCert(ICacheEntry entry)
             {
+                entry.SetSize(1);
                 var notBefore = DateTimeOffset.Now.AddDays(-1);
                 var notAfter = DateTimeOffset.Now.AddYears(1);
                 entry.SetAbsoluteExpiration(notAfter);
@@ -150,7 +195,7 @@ namespace FastGithub.HttpServer.Certs
                 var extraDomains = GetExtraDomains();
 
                 var subjectName = new X500DistinguishedName($"CN={domain}");
-                var endCert = CertGenerator.CreateEndCertificate(this.caCert, subjectName, extraDomains, notBefore, notAfter);
+                using var endCert = CertGenerator.CreateEndCertificate(this.caCert, subjectName, extraDomains, notBefore, notAfter);
 
                 // 重新初始化证书，以兼容win平台不能使用内存证书
                 return new X509Certificate2(endCert.Export(X509ContentType.Pfx));

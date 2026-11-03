@@ -128,24 +128,40 @@ namespace FastGithub.Http
         private async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, IPEndPoint ipEndPoint, CancellationToken cancellationToken)
         {
             var socket = new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-            await socket.ConnectAsync(ipEndPoint, cancellationToken);
-            var stream = new NetworkStream(socket, ownsSocket: true);
-
-            var requestContext = context.InitialRequestMessage.GetRequestContext();
-            if (requestContext.IsHttps == false)
+            try
             {
-                return stream;
+                await socket.ConnectAsync(ipEndPoint, cancellationToken);
+                var stream = new NetworkStream(socket, ownsSocket: true);
+
+                var requestContext = context.InitialRequestMessage.GetRequestContext();
+                if (requestContext.IsHttps == false)
+                {
+                    return stream;
+                }
+
+                var tlsSniValue = requestContext.TlsSniValue.WithIPAddress(ipEndPoint.Address);
+                var sslStream = new SslStream(stream, leaveInnerStreamOpen: false);
+                try
+                {
+                    await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                    {
+                        TargetHost = tlsSniValue.Value,
+                        RemoteCertificateValidationCallback = ValidateServerCertificate
+                    }, cancellationToken);
+                    return sslStream;
+                }
+                catch
+                {
+                    sslStream.Dispose();
+                    throw;
+                }
             }
-
-            var tlsSniValue = requestContext.TlsSniValue.WithIPAddress(ipEndPoint.Address);
-            var sslStream = new SslStream(stream, leaveInnerStreamOpen: false);
-            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            catch
             {
-                TargetHost = tlsSniValue.Value,
-                RemoteCertificateValidationCallback = ValidateServerCertificate
-            }, cancellationToken);
-
-            return sslStream;
+                // 连接或握手失败时释放底层资源，避免句柄泄漏
+                socket.Dispose();
+                throw;
+            }
 
             // 验证证书有效性
             bool ValidateServerCertificate(object sender, X509Certificate? cert, X509Chain? chain, SslPolicyErrors errors)
@@ -159,7 +175,13 @@ namespace FastGithub.Http
 
                     var domain = context.DnsEndPoint.Host;
                     var dnsNames = ReadDnsNames(cert);
-                    return dnsNames.Any(dns => IsMatch(dns, domain));
+                    if (dnsNames.Any(dns => IsMatch(dns, domain)) == false)
+                    {
+                        return false;
+                    }
+
+                    // 名称匹配通过后仍须校验证书链，避免不可信证书被接受
+                    return errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors) == false;
                 }
 
                 return errors == SslPolicyErrors.None;

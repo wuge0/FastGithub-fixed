@@ -43,6 +43,19 @@ namespace FastGithub.HttpServer.TcpMiddlewares
             var task1 = connection.CopyToAsync(context.Transport.Output, cancellationToken);
             var task2 = context.Transport.Input.CopyToAsync(connection, cancellationToken);
             await Task.WhenAny(task1, task2);
+
+            // 单向结束后中止连接，等待另一方向完成并观察其异常，避免流提前释放与任务异常不可见
+            context.Abort();
+            try
+            {
+                await Task.WhenAll(task1, task2);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+            }
         }
 
         /// <summary>
@@ -62,7 +75,7 @@ namespace FastGithub.HttpServer.TcpMiddlewares
                     using var timeoutTokenSource = new CancellationTokenSource(connectTimeout);
                     using var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutTokenSource.Token);
                     await socket.ConnectAsync(address, endPoint.Port, linkedTokenSource.Token);
-                    return new NetworkStream(socket, ownsSocket: false);
+                    return new NetworkStream(socket, ownsSocket: true);
                 }
                 catch (Exception ex)
                 {

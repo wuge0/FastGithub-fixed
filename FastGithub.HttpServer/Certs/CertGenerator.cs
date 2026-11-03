@@ -114,7 +114,9 @@ namespace FastGithub.HttpServer.Certs
                 notAfter = issuerCertificate.NotAfter;
             }
 
-            var serialNumber = BitConverter.GetBytes(Random.Shared.NextInt64());
+            // 首字节清零保证序列号为正数，符合RFC 5280
+            var serialNumber = RandomNumberGenerator.GetBytes(8);
+            serialNumber[0] = 0;
             using var certOnly = request.Create(issuerCertificate, notBefore.Value, notAfter.Value, serialNumber);
             return certOnly.CopyWithPrivateKey(rsa);
         }

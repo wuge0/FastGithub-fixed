@@ -18,7 +18,7 @@ namespace FastGithub.PacketIntercept
         private readonly IDnsInterceptor dnsInterceptor;
         private readonly IEnumerable<IDnsConflictSolver> conflictSolvers;
         private readonly ILogger<DnsInterceptHostedService> logger;
-        private readonly IHost host;
+        private readonly IHostApplicationLifetime lifetime;
 
         /// <summary>
         /// dns拦截后台服务
@@ -26,17 +26,17 @@ namespace FastGithub.PacketIntercept
         /// <param name="dnsInterceptor"></param>
         /// <param name="conflictSolvers"></param>
         /// <param name="logger"></param>
-        /// <param name="host"></param>
+        /// <param name="lifetime"></param>
         public DnsInterceptHostedService(
             IDnsInterceptor dnsInterceptor,
             IEnumerable<IDnsConflictSolver> conflictSolvers,
             ILogger<DnsInterceptHostedService> logger,
-            IHost host)
+            IHostApplicationLifetime lifetime)
         {
             this.dnsInterceptor = dnsInterceptor;
             this.conflictSolvers = conflictSolvers;
             this.logger = logger;
-            this.host = host;
+            this.lifetime = lifetime;
         }
 
         /// <summary>
@@ -45,10 +45,18 @@ namespace FastGithub.PacketIntercept
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
         public override async Task StartAsync(CancellationToken cancellationToken)
-        {          
+        {
             foreach (var solver in this.conflictSolvers)
             {
-                await solver.SolveAsync(cancellationToken);
+                // 单个solver失败不影响其余solver与启动
+                try
+                {
+                    await solver.SolveAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogError(ex, $"{solver.GetType().Name}处理冲突失败");
+                }
             }
             await base.StartAsync(cancellationToken);
         }
@@ -62,7 +70,15 @@ namespace FastGithub.PacketIntercept
         {
             foreach (var solver in this.conflictSolvers)
             {
-                await solver.RestoreAsync(cancellationToken);
+                // 单个solver恢复失败不影响其余solver
+                try
+                {
+                    await solver.RestoreAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogError(ex, $"{solver.GetType().Name}恢复冲突失败");
+                }
             }
             await base.StopAsync(cancellationToken);
         }
@@ -85,9 +101,9 @@ namespace FastGithub.PacketIntercept
             {
             }
             catch (Exception ex)
-            { 
+            {
                 this.logger.LogError(ex, "dns拦截器异常");
-                await this.host.StopAsync(stoppingToken);
+                this.lifetime.StopApplication();
             }
         }
     }

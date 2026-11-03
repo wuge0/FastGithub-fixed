@@ -37,6 +37,7 @@ namespace FastGithub.DomainResolve
         private readonly TimeSpan stateExpiration = TimeSpan.FromMinutes(5d);
         private readonly TimeSpan minTimeToLive = TimeSpan.FromSeconds(30d);
         private readonly TimeSpan maxTimeToLive = TimeSpan.FromMinutes(10d);
+        private readonly TimeSpan failureTimeToLive = TimeSpan.FromSeconds(15d);
 
         private readonly int resolveTimeout = (int)TimeSpan.FromSeconds(4d).TotalMilliseconds;
         private static readonly TimeSpan tcpConnectTimeout = TimeSpan.FromSeconds(2d);
@@ -175,29 +176,13 @@ namespace FastGithub.DomainResolve
             catch (Exception ex)
             {
                 this.logger.LogWarning($"{endPoint.Host}@{dns}->{ex.Message}");
-                var expiration = IsSocketException(ex) ? this.maxTimeToLive : this.minTimeToLive;
-                return this.dnsLookupCache.Set(key, Array.Empty<IPAddress>(), expiration);
+                // 失败结果使用短负缓存，避免一次网络抖动导致域名长时间无法解析
+                return this.dnsLookupCache.Set(key, Array.Empty<IPAddress>(), this.failureTimeToLive);
             }
             finally
             {
                 semaphore.Release();
             }
-        }
-
-        /// <summary>
-        /// 是否为Socket异常
-        /// </summary>
-        /// <param name="ex"></param>
-        /// <returns></returns>
-        private static bool IsSocketException(Exception ex)
-        {
-            if (ex is SocketException)
-            {
-                return true;
-            }
-
-            var inner = ex.InnerException;
-            return inner != null && IsSocketException(inner);
         }
 
 

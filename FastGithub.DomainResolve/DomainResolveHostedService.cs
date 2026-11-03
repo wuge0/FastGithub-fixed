@@ -46,7 +46,20 @@ namespace FastGithub.DomainResolve
 
                 while (stoppingToken.IsCancellationRequested == false)
                 {
-                    await this.domainResolver.TestSpeedAsync(stoppingToken);
+                    try
+                    {
+                        await this.domainResolver.TestSpeedAsync(stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        // 单轮测速失败不影响后续循环，保持测速服务持续可用
+                        this.logger.LogWarning(ex, "测速异常");
+                    }
+
                     await Task.Delay(this.testPeriodTimeSpan, stoppingToken);
                 }
             }

@@ -13,6 +13,6 @@
         /// <summary>
         /// 写入
         /// </summary>
-        Wirte
+        Write
     }
 }

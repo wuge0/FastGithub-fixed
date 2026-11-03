@@ -28,6 +28,7 @@ namespace FastGithub.PacketIntercept.Dns
 
         private readonly IOptions<FastGithubOptions> options;
         private readonly ILogger<ProxyConflictSolver> logger;
+        private HashSet<string>? addedItems;
 
         [DllImport("wininet.dll")]
         private static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
@@ -80,12 +81,16 @@ namespace FastGithub.PacketIntercept.Dns
                 return;
             }
 
+            var exists = GetProxyOvride(settings).ToHashSet();
             var items = this.options.Value.DomainConfigs.Keys.ToHashSet();
-            foreach (var item in GetProxyOvride(settings))
+            foreach (var item in exists)
             {
                 items.Add(item);
             }
             SetProxyOvride(settings, items);
+
+            // 记录本次新增的条目，Restore时仅移除这些，避免误删用户原有的配置
+            this.addedItems = items.Except(exists).ToHashSet();
         }
 
         /// <summary>
@@ -100,7 +105,9 @@ namespace FastGithub.PacketIntercept.Dns
             }
 
             var proxyOvride = GetProxyOvride(settings);
-            var items = proxyOvride.Except(this.options.Value.DomainConfigs.Keys);
+            var items = this.addedItems == null
+                ? proxyOvride
+                : proxyOvride.Except(this.addedItems);
             SetProxyOvride(settings, items);
         }
 

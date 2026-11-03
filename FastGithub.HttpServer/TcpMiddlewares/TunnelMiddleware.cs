@@ -64,6 +64,19 @@ namespace FastGithub.HttpServer.TcpMiddlewares
                     var task1 = connection.CopyToAsync(transport.Output, cancellationToken);
                     var task2 = transport.Input.CopyToAsync(connection, cancellationToken);
                     await Task.WhenAny(task1, task2);
+
+                    // 单向结束后中止连接，等待另一方向完成并观察其异常，避免流提前释放与任务异常不可见
+                    context.Abort();
+                    try
+                    {
+                        await Task.WhenAll(task1, task2);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
             }
         }
@@ -81,7 +94,9 @@ namespace FastGithub.HttpServer.TcpMiddlewares
             var innerExceptions = new List<Exception>();
             await foreach (var endPoint in this.GetUpstreamEndPointsAsync(host, cancellationToken))
             {
-                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                // 根据上游地址族创建Socket，支持IPv6上游
+                var addressFamily = endPoint is IPEndPoint ipEndPoint ? ipEndPoint.AddressFamily : AddressFamily.InterNetwork;
+                var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
                 try
                 {
                     using var timeoutTokenSource = new CancellationTokenSource(this.connectTimeout);

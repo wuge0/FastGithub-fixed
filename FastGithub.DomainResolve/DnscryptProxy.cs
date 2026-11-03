@@ -44,8 +44,20 @@ namespace FastGithub.DomainResolve
             this.logger = logger;
             this.processName = NAME;
             this.serviceName = $"{nameof(FastGithub)}.{NAME}";
-            this.exeFilePath = Path.Combine(PATH, OperatingSystem.IsWindows() ? $"{NAME}.exe" : NAME);
-            this.tomlFilePath = Path.Combine(PATH, $"{NAME}.toml");
+            // 基于应用根目录构造绝对路径，避免依赖进程工作目录
+            var basePath = AppContext.BaseDirectory;
+            this.exeFilePath = Path.Combine(basePath, PATH, OperatingSystem.IsWindows() ? $"{NAME}.exe" : NAME);
+            this.tomlFilePath = Path.Combine(basePath, PATH, $"{NAME}.toml");
+
+            // Linux/macOS下确保二进制具有可执行权限
+            if ((OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) && File.Exists(this.exeFilePath))
+            {
+                var mode = File.GetUnixFileMode(this.exeFilePath);
+                if (mode.HasFlag(UnixFileMode.UserExecute) == false)
+                {
+                    File.SetUnixFileMode(this.exeFilePath, mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                }
+            }
         }
 
         /// <summary>
@@ -61,7 +73,7 @@ namespace FastGithub.DomainResolve
             }
             catch (Exception ex)
             {
-                this.logger.LogWarning($"{this.processName}启动失败：{ex.Message}");
+                this.logger.LogError(ex, $"{this.processName}启动失败，加密DNS不可用，将退化为普通DNS");
             }
         }
 

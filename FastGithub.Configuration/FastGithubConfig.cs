@@ -92,8 +92,10 @@ namespace FastGithub.Configuration
 
             DomainConfig? GetDomainConfig(string domain)
             {
-                var key = this.domainConfigs.Keys.FirstOrDefault(item => item.IsMatch(domain));
-                return key == null ? null : this.domainConfigs[key];
+                // 捕获字典快照，避免热更新替换字典后用旧key索引新字典
+                var configs = this.domainConfigs;
+                var key = configs.Keys.FirstOrDefault(item => item.IsMatch(domain));
+                return key == null ? null : configs[key];
             }
         }
 
